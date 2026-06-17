@@ -1,6 +1,6 @@
 /*==============================================================================
   INVERSOR PUENTE H — ESP32 (MCPWM)
-  SINTESIS: FAULT HANDLER (apaga D0/D1 de verdad) + GPTIMER (guarda fina ~7.5us)
+  SINTESIS: FAULT HANDLER (apaga D0/D1 de verdad) + GPTIMER (en 0 = guarda fina ~7.5us)
   ------------------------------------------------------------------------------
   COMBINA lo mejor de dos scripts previos:
 
