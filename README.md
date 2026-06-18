@@ -1,5 +1,8 @@
 
 
+<img src="/mcpwm_01.png" width="600" alt="Split-phase a 20 kHz">
+<img src="/mcpwm_02.png" width="600" alt="Split-phase a 20 kHz">
+<img src="/mcpwm_03.png" width="600" alt="Split-phase a 20 kHz">
 
 # Zero-Crossing Polarity-Transition Delay en un Inversor SPWM de Puente H (ESP32 / MCPWM)
 
@@ -16,11 +19,6 @@ zero-crossing distortion, polarity-transition delay, shoot-through prevention, f
 cycle-by-cycle, GPTimer, phase locking, unipolar PWM.
 
 ---
-
-<img src="/mcpwm_01.png" width="600" alt="Split-phase a 20 kHz">
-<img src="/mcpwm_02.png" width="600" alt="Split-phase a 20 kHz">
-<img src="/mcpwm_03.png" width="600" alt="Split-phase a 20 kHz">
-
 
 ## Glosario de partida — tres conceptos que NO son lo mismo
 
@@ -280,7 +278,14 @@ porque el fenómeno está identificado.
 - [x] Shadow del comparador en TEP (causa raíz del "pulso ancho" resuelta)
 - [x] Autotest de registros por serial contra silicio
 
-### Pendiente
+### Pendiente — roadmap por fases
+
+El proyecto está en marcha. Los pendientes se ordenan de lo inmediato a lo ambicioso: la regla que
+sostuvo el trabajo de hoy (medir antes de creer, aislar una variable) aplica con más fuerza a medida
+que se sube de fase, porque el costo del error crece — de un pulso espurio en el analizador a corrientes
+circulantes que funden MOSFET en microsegundos.
+
+#### Fase A — Cierre del núcleo actual (caminar firme)
 
 - [ ] **Escalado de `tmrRegVal`:** el cálculo asume base de 16 MHz cuando el APB real es 80 MHz
   (tick 12.5 ns vs 62.5 ns asumido). La frecuencia de portadora medida sale correcta, pero
@@ -289,6 +294,51 @@ porque el fenómeno está identificado.
 - [ ] Verificar el enganche de fase a 50 Hz tras usar la rampa de frecuencia.
 - [ ] Validar el comportamiento del cruce con carga inductiva real (ruta de freewheeling durante la
   guarda).
+
+#### Fase B — Robustez de potencia (trotar)
+
+- [ ] **Dead-time adaptativo por temperatura del MOSFET.** Los tiempos de conmutación del MOSFET
+  (retardo de apagado por la carga de Miller / Qgd) varían con la temperatura de unión: un dead-time
+  fijo seguro en frío puede quedar ajustado en caliente, y uno holgado en caliente desperdicia
+  eficiencia en frío. Plan: leer temperatura (NTC en disipador o sensor del módulo) y modular los
+  80 ticks del dead-time según una curva, reconfigurando `mcpwm_deadtime_enable` desde el loop sin
+  introducir glitch en la conmutación.
+- [ ] **Protección de sobrecorriente por hardware reutilizando el fault handler.** El fault handler ya
+  está montado y enrutado por software; conectarle una entrada de falla real (sensor de corriente +
+  comparador) daría apagado en nanosegundos ante shoot-through o sobrecarga, sin pasar por software.
+  Reutiliza la infraestructura ya construida para seguridad de potencia real.
+- [ ] **Realimentación de tensión de salida (lazo cerrado).** Hoy el inversor es lazo abierto (amplitud
+  fija). Medir la salida y ajustar la amplitud regularía ante variaciones de carga y de bus DC.
+
+#### Fase C — Detección de cruce sincronizada y operación en paralelo (correr)
+
+> La culminación del proyecto. Es un proyecto en sí mismo, no una función más: el reparto de corriente
+> entre inversores es un problema de estabilidad de control y de hardware donde el error no es cosmético.
+> Las piezas dominadas en las fases anteriores (detección de cruce determinista, control fino de
+> amplitud, control del índice de tabla `i`) son **prerrequisitos directos** de esta fase.
+
+- [ ] **PLL por software** que enganche la tabla de seno interna a una referencia externa: detector de
+  fase + filtro de lazo + ajuste fino de `freqMod` e índice `i` para llevar el error de fase a cero.
+  Es el componente común a todo lo demás de esta fase.
+- [ ] **Paralelo en isla (microred sin red) con droop control.** Varios inversores alimentando una carga
+  común sin referencia de red. El reto central es el reparto de carga: diferencias mínimas de fase o
+  amplitud entre inversores generan corriente circulante destructiva. El *droop control* (reducir
+  frecuencia y amplitud según la potencia entregada, imitando generadores síncronos) reparte carga
+  **sin comunicación entre inversores** — sincronización por física, no por cable.
+- [ ] **Grid-tie (atado a red), opcional y regulado.** Sincronización con la red existente vía PLL +
+  protección anti-islanding (requisito legal de interconexión en la mayoría de jurisdicciones). Solo
+  si el objetivo evoluciona a inyección a red; entra en territorio normativo y de certificación.
+- [ ] **(por definir)** — espacio reservado para el siguiente hallazgo que esta arquitectura destape.
+
+#### Transversal
+
+- [ ] **Compensación de zero-crossing distortion residual.** Aunque la guarda eliminó el pulso espurio,
+  toda banda muerta introduce una pequeña distorsión armónica en el cruce; los inversores de calidad la
+  compensan inyectando una corrección en el ciclo de duty adyacente al cruce.
+
+> **Disciplina de avance:** cada salto hacia "correr" se da con la misma metodología de hoy — medir
+> antes de creer, aislar una variable, validar en banco con carga controlada (resistiva → inductiva →
+> real) antes de cualquier conexión seria. No acelerar: encadenar caminatas firmes.
 
 ---
 
