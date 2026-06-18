@@ -277,6 +277,14 @@ porque el fenómeno está identificado.
 - [x] Rampa de frecuencia en tiempo real (50↔60 Hz)
 - [x] Shadow del comparador en TEP (causa raíz del "pulso ancho" resuelta)
 - [x] Autotest de registros por serial contra silicio
+- [x] **Escalado de `tmrRegVal` — verificado y descartado como falsa alarma.** El diagnóstico de
+  silicio original sugería una base de 16 MHz asumida (tick 62.5 ns), pero la verificación numérica
+  (cálculo vs registro vs APB real) confirmó que `tmrRegVal` calculado = periodo en registro = **347**,
+  frecuencia 22.989 kHz por ambas vías, y `amplitude` = 312 = **89.9%** del periodo real. El 62.5 ns
+  proviene de 80 MHz ÷ prescaler 5, **no** de una base de 16 MHz — fue una coincidencia numérica (ese
+  tick puede salir de dos caminos). `tmrRegVal`, `amplitude` y `sampleNum` están sobre la base correcta.
+  No había factor de escala. *Lección: medir cerró en un minuto lo que la sospecha habría dejado abierto
+  indefinidamente.*
 
 ### Pendiente — roadmap por fases
 
@@ -287,10 +295,6 @@ circulantes que funden MOSFET en microsegundos.
 
 #### Fase A — Cierre del núcleo actual (caminar firme)
 
-- [ ] **Escalado de `tmrRegVal`:** el cálculo asume base de 16 MHz cuando el APB real es 80 MHz
-  (tick 12.5 ns vs 62.5 ns asumido). La frecuencia de portadora medida sale correcta, pero
-  `amplitude` y `sampleNum` cuelgan del mismo cálculo — conviene verificar que la amplitud del seno
-  y el número de muestras por ciclo sean exactamente los esperados.
 - [ ] Verificar el enganche de fase a 50 Hz tras usar la rampa de frecuencia.
 - [ ] Validar el comportamiento del cruce con carga inductiva real (ruta de freewheeling durante la
   guarda).
