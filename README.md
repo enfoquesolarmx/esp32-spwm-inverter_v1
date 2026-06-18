@@ -1,15 +1,48 @@
-# Inversor SPWM de Puente H en ESP32 — Cruce por Cero Limpio
 
-> Bitácora técnica de la depuración de un inversor monofásico SPWM sobre ESP32 (MCPWM).
-> La historia de por qué el cruce por cero de un puente H es, como descubrimos a fuerza de medir,
-> un problema de **resonancia entre relojes** disfrazado de bug de software.
+
+
+# Zero-Crossing Polarity-Transition Delay en un Inversor SPWM de Puente H (ESP32 / MCPWM)
+
+> **Implementación de un *zero-crossing / polarity-transition delay* sub-10 µs vía fault handler del
+> MCPWM, con guarda generada por GPTimer, sobre ESP32 clásico.**
+>
+> Bitácora de ingeniería de la depuración de un inversor monofásico SPWM unipolar. Lo que empezó como
+> "ajustar una banda muerta de 500 ns a 10 µs" terminó destapando seis hipótesis falsas, el pipeline
+> oculto del MCPWM, y un *jitter* que no era un bug de software sino un **batido de fase entre osciladores
+> acoplados**. La cura: enganche armónico de la portadora a 20 kHz.
+
+**Palabras clave / keywords:** ESP32, MCPWM, SPWM, H-bridge inverter, dead-time, blanking time,
+zero-crossing distortion, polarity-transition delay, shoot-through prevention, fault handler,
+cycle-by-cycle, GPTimer, phase locking, unipolar PWM.
+
+---
+
+<img src="/mcpwm_01.png" width="600" alt="Split-phase a 20 kHz">
+<img src="/mcpwm_02.png" width="600" alt="Split-phase a 20 kHz">
+<img src="/mcpwm_03.png" width="600" alt="Split-phase a 20 kHz">
+
+
+## Glosario de partida — tres conceptos que NO son lo mismo
+
+La literatura comercial mezcla estos términos. Este proyecto los trata como lo que son: cosas distintas,
+en lugares distintos del puente, a frecuencias distintas.
+
+| Concepto | Dónde actúa | Frecuencia del evento | Magnitud | ¿En este proyecto? |
+|----------|-------------|----------------------|----------|--------------------|
+| **Blanking time / dead-time** | Dentro de una rama (HO1/LO1), en cada conmutación de portadora | ~20–23 kHz | ns (300 ns) | Sí, por hardware MCPWM. Nunca tocado. |
+| **Zero-crossing / polarity-transition delay** | En el relevo de polaridad de la fundamental (D2/D3) | 120 Hz (2× por ciclo 60 Hz) | µs (~8 µs) | **Sí — es el núcleo de este trabajo.** |
+| **Shoot-through** | El fallo que ambos previenen | — | — | Evitado en ambos planos. |
+
+> El *blanking time* protege cada pulso de portadora. El *zero-crossing delay* protege la transición de
+> polaridad. Los inversores comerciales serios implementan **los dos**; aquí, durante el zero-crossing
+> delay se apaga **todo el puente** (los cuatro transistores), más conservador que el relevo típico.
 
 ---
 
 ## TL;DR
 
 Construir un inversor SPWM funciona "a la primera". Hacer que el **cruce por cero** sea limpio
-—sin cortocircuito de rama, sin pulso de polaridad equivocada, con banda de guarda estable—
+—sin shoot-through, sin pulso de polaridad equivocada, con *polarity-transition delay* estable—
 es donde se concentra toda la dificultad real del proyecto.
 
 Este documento narra el camino completo: desde una banda muerta de 500 ns que queríamos llevar
@@ -25,11 +58,11 @@ puede ser física. El "bug" era armonía.
 ## Tabla de contenidos
 
 1. [Arquitectura del sistema](#1-arquitectura-del-sistema)
-2. [El problema del cruce por cero](#2-el-problema-del-cruce-por-cero)
+2. [El problema del zero-crossing](#2-el-problema-del-zero-crossing)
 3. [Diario de depuración: hipótesis y su caída](#3-diario-de-depuración-hipótesis-y-su-caída)
 4. [El hallazgo del fault handler](#4-el-hallazgo-del-fault-handler)
-5. [El pulso espurio de polaridad](#5-el-pulso-espurio-de-polaridad)
-6. [La resonancia de frecuencia](#6-la-resonancia-de-frecuencia)
+5. [Zero-crossing distortion: el pulso espurio de polaridad](#5-zero-crossing-distortion-el-pulso-espurio-de-polaridad)
+6. [La resonancia de frecuencia (phase locking)](#6-la-resonancia-de-frecuencia-phase-locking)
 7. [Lecciones de ingeniería](#7-lecciones-de-ingeniería)
 8. [Estado final y pendientes](#8-estado-final-y-pendientes)
 
@@ -55,11 +88,11 @@ Protege HO1/LO1 contra cortocircuito de rama en cada conmutación de alta frecue
 
 ---
 
-## 2. El problema del cruce por cero
+## 2. El problema del zero-crossing
 
 El objetivo aparente era simple: los brazos de retorno D2/D3 conmutaban con solo ~500 ns de
-separación en el cruce por cero, y queríamos una banda de guarda de ~10 µs para dar margen seguro
-al relevo de polaridad.
+separación en el cruce por cero, y queríamos un *polarity-transition delay* de ~10 µs para dar margen
+seguro al relevo de polaridad y evitar conducción cruzada durante el cambio de estado.
 
 Lo que parecía un ajuste de un parámetro se convirtió en una cadena de problemas anidados, cada uno
 escondido detrás del anterior. La regla que sostuvo todo el trabajo fue una sola:
@@ -141,10 +174,11 @@ mcpwm_fault_set_cyc_mode(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_SELECT_F0,
 
 ---
 
-## 5. El pulso espurio de polaridad
+## 5. Zero-crossing distortion: el pulso espurio de polaridad
 
-Una observación afinada en el analizador reveló un artefacto sutil: en el cruce aparecía un pulso de
-**polaridad equivocada**. La causa era una desincronización de timing:
+Una observación afinada en el analizador reveló un artefacto sutil — un caso de libro de
+**zero-crossing distortion**: en el cruce aparecía un pulso de **polaridad equivocada**. La causa era
+una desincronización de timing:
 
 - El brazo **rápido** cambiaba su régimen de modulación **al instante** del cruce de signo del seno.
 - El brazo **lento** completaba su relevo **~8 µs después**, al final de la guarda.
@@ -162,7 +196,7 @@ elimina el artefacto por completo.
 
 ---
 
-## 6. La resonancia de frecuencia
+## 6. La resonancia de frecuencia (phase locking)
 
 El último misterio: la guarda medía estable en un banco de pruebas mínimo, pero en la versión completa
 (con rampa de arranque y rampa de frecuencia activas) **saltaba entre dos valores** — un patrón
@@ -255,6 +289,31 @@ porque el fenómeno está identificado.
 - [ ] Verificar el enganche de fase a 50 Hz tras usar la rampa de frecuencia.
 - [ ] Validar el comportamiento del cruce con carga inductiva real (ruta de freewheeling durante la
   guarda).
+
+---
+
+## Contexto: esto tiene nombre propio en la industria
+
+Tras resolverlo midiendo, encontramos que la técnica implementada aquí corresponde a lo que los
+inversores comerciales llaman **zero-crossing delay** o **polarity-transition delay**: una banda muerta
+aplicada específicamente en la transición de polaridad de la fundamental, distinta del *blanking
+time / dead-time* que protege cada conmutación de la portadora.
+
+No es una rareza de este montaje: es **práctica estándar de inversores serios**. El cruce por cero es
+el punto más propenso a conducción cruzada porque es donde la corriente de la carga inductiva cambia de
+dirección y la corriente de freewheeling busca camino mientras los transistores conmutan. Por eso la
+industria le da un delay con nombre propio, separado del dead-time genérico.
+
+Para profundizar con fuentes rigurosas (no divulgación, que tiende a mezclar los términos):
+notas de aplicación de fabricantes de gate drivers (Infineon, Texas Instruments, STMicroelectronics)
+sobre *dead-time insertion*; y, por separado, literatura sobre *zero-crossing distortion in unipolar
+PWM inverters*. En material serio, "dead-time/blanking" y "zero-crossing/polarity-transition delay"
+aparecen como conceptos distintos con valores distintos — no como sinónimos.
+
+La diferencia de este trabajo no es haber inventado la técnica, sino haber llegado a ella **entendiendo
+cada capa**: por qué `duty=0` no apaga el complemento, por qué el fault handler sí, por qué el GPTimer
+libre elimina la latencia de arranque, y por qué 20 kHz engancha la fase. La mayoría de implementaciones
+funcionan sin que su autor pueda explicar el porqué. Esta está documentada hasta el mecanismo.
 
 ---
 
